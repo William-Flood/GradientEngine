@@ -78,7 +78,7 @@ fn get_managed_vertices <'a>(vertices: &'a mut Vec<Vertex>, edges: &Vec<Edge>) -
             let connected_ids = connected_and_self_ids.iter().filter(|vi| **vi != managed_vertex_ref.borrow().vertex.id);
             connected_vertices = connected_ids.map(|vi| Weak::clone(&manager_refs[*vi])).collect();
         }
-        let mut managed_vertex = managed_vertex_ref;
+        let managed_vertex = managed_vertex_ref;
         managed_vertex.borrow_mut().connected_vertices.extend(connected_vertices);
     }
     managed_vertices
@@ -110,7 +110,7 @@ pub fn smooth_polygons(
     assert!(polygon_coords.iter().all(|pv| pv.len() == 4 || pv.len() == 3));
     let mut vertex_list = mesh::get_vertices(&polygon_coords);
     let mut edge_list = mesh::get_edge_vector(&polygon_coords, &vertex_list);
-    let mut polygons = mesh::get_polygons(&polygon_coords, &vertex_list, &edge_list);
+    let polygons = mesh::get_polygons(&polygon_coords, &vertex_list, &edge_list);
     mesh::connect_mesh(&mut vertex_list, &mut edge_list, &polygons);
     let mut managed_vertices = get_managed_vertices(&mut vertex_list, &edge_list);
     smooth_list(&mut managed_vertices);

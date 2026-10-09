@@ -1,5 +1,6 @@
 import time
 
+from image.render import render
 from util.config import config_obj
 from color_mapper import color_mapper
 from borders.detector import detect_drawn_border
@@ -19,6 +20,12 @@ from gradengrs import get_double_borders_dict
 from image.draw_borders import draw_region_borders, draw_borders, draw_validation_failures
 from util.rasterize import *
 from polygon.subdivide_polygons import subdivide
+from polygon.smooth import smooth_region_polygons
+import image.render
+from scipy.interpolate import CloughTocher2DInterpolator
+from polygon.decimate_mesh import decimate_mesh
+from polygon.remove_self_intersections import remove_self_intersections
+from polygon.validate_region_polygon import validate_region_polygons
 
 
 def get_interpolations(
@@ -283,7 +290,8 @@ def make_border_loops(
         image_shape,
         border_defuzz_threshold,
         border_traversal_failure_tolerance,
-        validation_highlight_file_name
+        validation_highlight_file_name,
+        validation_fix_file_name
     ):
     regions_array = np.full(image_shape, -1)
     values_array = np.full(image_shape, -1)
@@ -292,6 +300,7 @@ def make_border_loops(
         regions_array[*region.points] = region.id
         region_dict[region.id] = region
         values_array[*region.points] = region.value
+    validate(values_array, validation_highlight_file_name, validation_fix_file_name)
     # regions_csv = matrix_to_csv(regions_array)
     print("Detecting border pixels")
     # regions_borders_raw = detect_drawn_border(regions_array, values_array)
@@ -330,7 +339,7 @@ def make_border_loops(
     if all([border.traversal_failures is None for border in total_borders]):
         print("Decimating borders")
         for border in total_borders:
-            decimate(border, decimate_deviation_cutoff)
+            decimate(border, decimate_deviation_cutoff, border_defuzz_threshold)
         def inspect_regions():
             border_array = np.ones(image_shape)
             for border in total_borders:
@@ -349,16 +358,28 @@ def make_border_loops(
             if not region.is_void:
                 region.form_initial_polygon()
     else:
-        print(f"Traversal failures detected: Aborting.  Saving validation failues to {validation_highlight_file_name}")
         draw_validation_failures(total_borders, image_shape, validation_highlight_file_name)
+        raise(f"Traversal failures detected: Aborting.  Saving validation failues to {validation_highlight_file_name}")
 
 
 
 
-def normalize_polygons(regions, edge_subdivide_ratio, mesh_smooth_convergence_ratio):
+def normalize_polygons(regions: list[Region], edge_subdivide_ratio, min_length):
     print("Normalizing polygons")
-    cut_concave_regions(regions, edge_subdivide_ratio)
-    cut_out_quads(regions, mesh_smooth_convergence_ratio)
+    # test_region([1782, 3000], np.concat([rasterize_polygon(poly) for region in regions for poly in region.polygons], axis=1))
+    cut_concave_regions(regions, edge_subdivide_ratio, min_length)
+    # test_region([1782, 3000], np.concat([rasterize_polygon(poly) for region in regions for poly in region.polygons], axis=1))
+    def inspect_polys(region, ids):
+        scale = 10
+        polys = [poly for pid, poly in enumerate(region.polygons) if pid in ids]
+        polycoords = np.concat(polys, axis=1)
+        min_poly = np.min(polycoords, axis=1)
+        max_poly = np.max(polycoords, axis=1)
+        polyedges = (np.concat([rasterize_polygon(poly * scale) for poly in polys], axis=1))
+        adusted_polyedges = polyedges - min_poly[:, np.newaxis] * scale
+        test_region((max_poly - min_poly) * scale + 1, adusted_polyedges)
+    cut_out_quads(regions)
+    # inspect_polys(regions[19], range(len(regions[19].polygons)))
 
 
 
@@ -375,7 +396,9 @@ def subdivided_border_tangent_interpolation_fill(
     config_file_name="",
     mesh_smooth_convergence_ratio=.05,
     polygon_subdivisions=2,
-    validation_highlight_file_name="validation_failures.png"
+    validation_highlight_file_name="validation_failures.png",
+    stripes=255,
+    validation_fix_file_name="validation_fixes.png"
 ):
     config_obj.load(config_file_name)
     guide_image = Image.open(guide_image_file)
@@ -387,17 +410,37 @@ def subdivided_border_tangent_interpolation_fill(
     for value, points in color_map.items():
         points_array = np.array(points)
         values_array[points_array[...,0], points_array[...,1]] = value
-    validate(values_array, validation_highlight_file_name)
-    regions = identify_image_regions(values_array, region_defuzz_threshold, sideways_cut_penalty)
+    regions: list[Region] = identify_image_regions(values_array, region_defuzz_threshold, sideways_cut_penalty)
     make_border_loops(
         regions,
         decimate_deviation_cutoff,
         guide_image_shape,
         border_defuzz_threshold,
         border_traversal_failure_tolerance,
-        validation_highlight_file_name
+        validation_highlight_file_name,
+        validation_fix_file_name
     )
-    normalize_polygons(regions, edge_subdivide_ratio, mesh_smooth_convergence_ratio)
+    def inspect_polys(region, ids):
+        scale = 10
+        polys = [poly for pid, poly in enumerate(region.polygons) if pid in ids]
+        polycoords = np.concat(polys, axis=1)
+        min_poly = np.min(polycoords, axis=1)
+        max_poly = np.max(polycoords, axis=1)
+        polyedges = (np.concat([rasterize_polygon(poly * scale) for poly in polys], axis=1))
+        adusted_polyedges = polyedges - min_poly[:, np.newaxis] * scale
+        test_region((max_poly - min_poly) * scale + 1, adusted_polyedges)
+    # inspect_polys(regions[79], [0])
+    # draw_polygons([region for region in regions if region.id == 79], guide_image_shape)
+    validate_region_polygons(regions, guide_image_shape, validation_highlight_file_name)
+    normalize_polygons(regions, edge_subdivide_ratio, border_defuzz_threshold)
     # draw_region_borders([region for region in regions if not region.is_void], guide_image_shape)
-    subdivide(regions, polygon_subdivisions, mesh_smooth_convergence_ratio)
+    # draw_polygons([region for region in regions if region.id == 79], guide_image_shape)
+    smooth_region_polygons(regions, mesh_smooth_convergence_ratio)
+    decimate_mesh(regions, border_defuzz_threshold)
+    remove_self_intersections(regions)
+    normalize_polygons(regions, edge_subdivide_ratio, border_defuzz_threshold)
+    subdivide(regions, polygon_subdivisions)
+    # smooth_region_polygons(regions, mesh_smooth_convergence_ratio)
     draw_polygons([region for region in regions if not region.is_void], guide_image_shape)
+    render(regions, guide_image_shape, result_image_file, stripes)
+

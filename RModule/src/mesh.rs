@@ -3,6 +3,7 @@ use std::cmp::Ordering;
 use crate::double_key_tree::DoubleKeyTree;
 use crate::find_index_in;
 use crate::find_index_in::BinaryKeyOrd;
+use crate::mesh::ConnectionResult::{FluidBorder, VoidBorder};
 
 pub struct Vertex {
     pub id: usize,
@@ -31,15 +32,25 @@ pub struct Edge {
     pub id: usize,
     pub vertex_1: usize,
     pub vertex_2: usize,
-    pub polygons: Vec<usize>
+    pub polygons: Vec<usize>,
+    pub edge_length: i32
 }
 
 impl Edge {
-    fn add_connected_polygon(&mut self, polygon_id: usize) {
+    fn add_connected_polygon(&mut self, polygon_id: usize) -> Result<(), ()> {
         if ! self.polygons.iter().any(|p| *p == polygon_id)
         {
             let current_len = self.polygons.len();
-            assert!(current_len < 2);
+            if current_len > 1 {
+                return Err(());
+            }
+            self.polygons.push(polygon_id);
+        }
+        Ok(())
+    }
+    fn add_connected_polygon_unguarded(&mut self, polygon_id: usize) {
+        if ! self.polygons.iter().any(|p| *p == polygon_id)
+        {
             self.polygons.push(polygon_id);
         }
     }
@@ -90,6 +101,12 @@ pub fn get_vertices(polygons: &Vec<Vec<(usize, usize)>>) -> Vec<Vertex> {
     vertices
 }
 
+pub enum ConnectionResult {
+    VoidBorder,
+    FrozenBorder,
+    FluidBorder(usize, usize)
+}
+
 impl Polygon {
     pub fn is_triangle(&self) -> bool {
         self.vertices.len() == 3
@@ -117,7 +134,7 @@ impl Polygon {
         // Indicates whether this polygon can be used as the terminal point of a cut
         self.is_triangle() || self.is_void_border(edges)
     }
-    pub fn get_connections(&self, edges: &Vec<Edge>) -> Vec<Option<usize>> {
+    pub fn get_connections(&self, edges: &[Edge]) -> Vec<Option<usize>> {
         // Provides a list of polygon ids bordering this polygon.  Polygon ids are listed in the order of their connecting edge in this polygon's edge list, and are None if the edge is a void border
         let mut results = Vec::with_capacity(self.edges.len());
         for edge_id in &self.edges {
@@ -131,6 +148,36 @@ impl Polygon {
             }
             else {
                 panic!("Invalid mesh geometry found when getting polygon connections");
+            }
+        }
+        results
+    }
+    pub fn get_unguarded_connections<'a>(&'a self, edges: &'a [Edge]) -> impl Iterator<Item = &'a usize> {
+        // Provides a list of polygon ids bordering this polygon.  This includes malformed edges, intended for use in fixing broken meshes.
+        self.edges.iter().map(|eid| &edges[*eid])
+        .flat_map(|e| e.polygons.iter().filter(|pid| self.id != **pid))
+    }
+    pub fn get_filtered_connections(&self, edges: &Vec<Edge>) -> Vec<ConnectionResult> {
+        // Provides a list of polygon ids bordering this polygon.  Polygon ids are listed in the order of their connecting edge in this polygon's 
+        // edge list, and are None if the edge is a void border.  Edges that cannot be cut into three separate vertices are excluded
+        let mut results = Vec::with_capacity(self.edges.len());
+        const MIN_SEPARATION: i32 = 4;
+        for &edge_id in self.edges.iter() {
+            let edge = &edges[edge_id];
+            if edge.edge_length >= MIN_SEPARATION {
+                let non_self_edge_connections: Vec<&usize> = edge.polygons.iter().filter(|connected_id| **connected_id != self.id).collect();
+                if non_self_edge_connections.len() == 0 {
+                    results.push(VoidBorder);
+                }
+                else if non_self_edge_connections.len() == 1 {
+                    results.push(FluidBorder(edge_id, *non_self_edge_connections[0]));
+                }
+                else {
+                    panic!("Invalid mesh geometry found when getting polygon connections");
+                }
+            }
+            else {
+                results.push(ConnectionResult::FrozenBorder);
             }
         }
         results
@@ -154,6 +201,18 @@ pub fn get_edge_vertex_indices(polygon_vect: &Vec<(usize, usize)>, point_count: 
     }
 }
 
+
+pub fn get_distances_of(vertex_vector: &Vec<Vertex>, vertex_1_index: usize, vertex_2_index: usize) -> i32 {
+    let vertex_1 = &vertex_vector[vertex_1_index];
+    let vertex_2 = &vertex_vector[vertex_2_index];
+    let y1 = vertex_1.y as i32;
+    let x1 = vertex_1.x as i32;
+    let y2 = vertex_2.y as i32;
+    let x2 = vertex_2.x as i32;
+    (y1 - y2).pow(2) + (x1 - x2).pow(2)
+}
+
+
 pub fn get_edge_vector(polygons: &Vec<Vec<(usize, usize)>>, vertex_vector: &Vec<Vertex>) -> Vec<Edge> {
     // Parses a nested list of polygon vertex coordinates into edge data objects
     let mut tree = DoubleKeyTree::new();
@@ -168,11 +227,15 @@ pub fn get_edge_vector(polygons: &Vec<Vec<(usize, usize)>>, vertex_vector: &Vec<
     let edge_count = edge_vector.len() / 2;
     let mut edges = Vec::with_capacity(edge_count);
     for edge_index in 0..edge_count {
+        let vertex_1_index = edge_vector[edge_index * 2];
+        let vertex_2_index = edge_vector[edge_index * 2 + 1];
+        let edge_length = get_distances_of(vertex_vector, vertex_1_index, vertex_2_index);
         edges.push(Edge {
             id: edge_index, 
-            vertex_1: edge_vector[edge_index * 2], 
-            vertex_2: edge_vector[edge_index * 2 + 1],
-            polygons: Vec::new()
+            vertex_1: vertex_1_index, 
+            vertex_2: vertex_2_index,
+            polygons: Vec::new(),
+            edge_length
         });
     }
     edges
@@ -208,7 +271,31 @@ pub fn connect_mesh(total_vertices: &mut Vec<Vertex>, total_edges: &mut Vec<Edge
     }
     for polygon in polygons {
         for polygon_edge in &polygon.edges {
-            total_edges[*polygon_edge].add_connected_polygon(polygon.id);
+            let connecting_edge = &mut total_edges[*polygon_edge];
+            let connect_res = connecting_edge.add_connected_polygon(polygon.id);
+            if connect_res.is_err() {
+                let mut poly_ids = vec![polygon.id];
+                for poly_id in &connecting_edge.polygons {
+                    poly_ids.push(*poly_id);
+                }
+                panic!("Too many polygons for edge: {poly_ids:?}");
+            }
+        }
+    }
+}
+
+pub fn connect_mesh_unguarded(total_vertices: &mut Vec<Vertex>, total_edges: &mut Vec<Edge>, polygons: &Vec<Polygon>) {
+    // Connects the edge objects to the polygon objects
+    for edge in &*total_edges {
+        let vertex_1 = &mut total_vertices[edge.vertex_1];
+        vertex_1.edges.push(edge.id);
+        let vertex_2 = &mut total_vertices[edge.vertex_2];
+        vertex_2.edges.push(edge.id);
+    }
+    for polygon in polygons {
+        for polygon_edge in &polygon.edges {
+            let connecting_edge = &mut total_edges[*polygon_edge];
+            connecting_edge.add_connected_polygon_unguarded(polygon.id);
         }
     }
 }

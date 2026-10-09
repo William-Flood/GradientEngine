@@ -8,9 +8,11 @@ import pstats
 import io
 import gradengc
 import gradengrs
-import numpy as np
 from util.inspection_utils import *
 import os
+from gradengrs import get_borders_dict
+from scipy.spatial import KDTree
+from polygon.cut_out_quads import cut_up_to_quads
 
 
 def build_default_output_filename(input_filename):
@@ -24,40 +26,23 @@ def build_default_output_filename(input_filename):
 
 
 def closest_and_opposite_main():
-    parser = argparse.ArgumentParser(
-        description="Apply gradients to an image using a guide image."
-    )
+    parser = argparse.ArgumentParser(description="An image processing utility that blends brightness values in an image")
 
-    # Positional arguments
-    parser.add_argument(
-        "guide_image_file",
-        help="Input guide image file"
-    )
+    parser.add_argument("guide_image_file")
 
     parser.add_argument(
-        "result_image_file",
-        nargs="?",
-        help=(
-            "Output image file. "
-            "If omitted, 'Gradient' is added to the input filename."
-        )
-    )
-
-    # Optional named arguments
-    parser.add_argument(
-        "-batch_stripe_distance",
-        type=int,
-        default=5,
-        help="Used to divide processing into batches"
+        "--result_image_file", type=str, default="",
+        help="The name of the output file"
     )
 
     parser.add_argument(
-        "-region_proportion_threshold",
-        type=float,
-        default=0.01,
-        help=(
-            "Threshold used to recognize aliasing between region boundaries"
-        )
+        "--batch_stripe_distance", type=int, default=5,
+        help="The size of the rectangles used to interpolate between"
+    )
+
+    parser.add_argument(
+        "--region_proportion_threshold", type=float, default=0.01,
+        help="A minimum threshold used to determine which brightness values to pass into the region identification step - any brightness values representing less than this fraction will be converted to the nearest matching valid value"
     )
 
     args = parser.parse_args()
@@ -80,120 +65,83 @@ def closest_and_opposite_main():
 
 
 def subdivided_border_main():
-    parser = argparse.ArgumentParser(
-        description="Apply gradients to an image using a guide image."
-    )
 
-    # Positional arguments
-    parser.add_argument(
-        "guide_image_file",
-        help="Input guide image file"
-    )
+    parser = argparse.ArgumentParser(description="An image processing utility that blends brightness values in an image")
+
+    parser.add_argument("guide_image_file")
 
     parser.add_argument(
-        "result_image_file",
-        nargs="?",
-        help=(
-            "Output image file. "
-            "If omitted, 'Gradient' is added to the input filename."
-        )
+        "--result_image_file", type=str, default="",
+        help="The name of the output file"
+    )
+    parser.add_argument(
+        "--region_defuzz_threshold", type=int, default=10,
+        help="The minimum size of a region - any smaller than this will be merged into the closest neighboring region"
     )
 
     parser.add_argument(
-        "-region_defuzz_threshold",
-        type=float,
-        default=10,
-        help=(
-            "Threshold used to filter out errant pixels"
-        )
+        "--sideways_cut_penalty", type=int, default=100,
+        help="A multiplier used to encourage the application to make cuts in a uniform direction when separating regions with holes"
     )
 
     parser.add_argument(
-        "-sideways_cut_penalty",
-        type=float,
-        default=100,
-        help=(
-            "Multiplier to cuts at a right angle to the last cut during hole removal"
-        )
+        "--border_defuzz_threshold", type=int, default=5,
+        help="The minimum size of a border - any smaller than this will be removed and the connected borders pinched together"
     )
 
     parser.add_argument(
-        "-border_defuzz_threshold",
-        type=float,
-        default=5,
-        help=(
-            "Threshold used to filter out errant pixels"
-        )
+        "--border_traversal_failure_tolerance", type=int, default=5,
+        help="The maximum size in a gap left by the border walk algorithm - if the algorithm fails to map more points than this, processing will halt and the program will highlight the failed pixels in the file indicated by validation_highlight_file_name"
     )
 
     parser.add_argument(
-        "-border_traversal_failure_tolerance",
-        type=int,
-        default=5,
-        help=(
-            "The maximum number of pixels that can be left out of an ordering before treating it as a validation error"
-        )
+        "--region_proportion_threshold", type=float, default=0.01,
+        help="A minimum threshold used to determine which brightness values to pass into the region identification step - any brightness values representing less than this fraction will be converted to the nearest matching valid value"
     )
 
     parser.add_argument(
-        "-region_proportion_threshold",
-        type=float,
-        default=0.01,
-        help=(
-            "Threshold used to recognize aliasing between region boundaries"
-        )
+        "--decimate_deviation_cutoff", type=int, default=3,
+        help="The parameter for the Ramer-Douglas-Peucker algorithm for decimating region borders"
     )
 
     parser.add_argument(
-        "-decimate_deviation_cutoff",
-        type=float,
-        default=3,
-        help=(
-            "Used to decide how much to segment the border between region boundaries"
-        )
+        "--edge_subdivide_ratio", type=float, default=3.0,
+        help="Used to determine when to subdivide an edge when splitting polygons into convex regions"
     )
 
     parser.add_argument(
-        "-edge_subdivide_ratio",
-        type=float,
-        default=3,
-        help=(
-            "Used during concave polygon splitting to decide when to subdivide an existing edge"
-        )
+        "--config_file_name", type=str, default="",
+        help="The name of a config file used to store parameters that aren't expected to change between invocations of the program - primarily for performance tuning"
     )
 
     parser.add_argument(
-        "-system_config_file",
-        type=str,
-        default="config.json",
-        help="Provides constants used for performance tuning and expected to be system-specific, such as batch sizes.  "
-             + "If the config file does not exist, defaults have been hard-coded inside util.config.py"
+        "--mesh_smooth_convergence_ratio", type=float, default=0.05,
+        help="A threshold used to signal completion of the polygon smoothing algorithm - smaller values produce more smoothing"
     )
 
     parser.add_argument(
-        "-mesh_smooth_convergence_ratio",
-        type=float,
-        default=.05,
-        help="Used to determine completion of polygon smoothing when building the mesh"
+        "--polygon_subdivisions", type=int, default=2,
+        help="The number of times to subdivide the polygons in the mesh"
     )
 
     parser.add_argument(
-        "-polygon_subdivisions",
-        type=int,
-        default=2,
-        help="Used to determine completion of polygon smoothing when building the mesh"
+        "--validation_highlight_file_name", type=str, default="validation_failures.png",
+        help="Used to highlight issues in the input image that prevent proper processing"
     )
 
     parser.add_argument(
-        "-validation_highlight_file_name",
-        type=str,
-        default="validation_failures.png",
-        help="The name of an image file to save validation errors to"
+        "--validation_fix_file_name", type=str, default="validation_fixes.png",
+        help="Used to suggest fixes to issues in the input image that prevent proper processing"
     )
 
     parser.add_argument(
-        "-profile",
-        action="store_true"
+        "--stripes", type=int, default=255,
+        help="The number of stripes to break the smoothed image back into - if set to 255, the image is outputted without discretizing"
+    )
+
+    parser.add_argument(
+        "--profile", action="store_true",
+        help="Sets the profiler on"
     )
 
     args = parser.parse_args()
@@ -209,8 +157,8 @@ def subdivided_border_main():
         with cProfile.Profile() as pr:
             # pr.enable()
             subdivided_border_tangent_interpolation_fill(
-                guide_image_file=args.guide_image_file,
-                result_image_file=result_image_file,
+                args.guide_image_file,
+                result_image_file,
                 region_defuzz_threshold=args.region_defuzz_threshold,
                 sideways_cut_penalty=args.sideways_cut_penalty,
                 border_defuzz_threshold=args.border_defuzz_threshold,
@@ -218,10 +166,11 @@ def subdivided_border_main():
                 region_proportion_threshold=args.region_proportion_threshold,
                 decimate_deviation_cutoff=args.decimate_deviation_cutoff,
                 edge_subdivide_ratio=args.edge_subdivide_ratio,
-                config_file_name=args.system_config_file,
+                config_file_name=args.config_file_name,
                 mesh_smooth_convergence_ratio=args.mesh_smooth_convergence_ratio,
                 polygon_subdivisions=args.polygon_subdivisions,
-                validation_highlight_file_name=args.validation_highlight_file_name
+                validation_highlight_file_name=args.validation_highlight_file_name,
+                stripes=args.stripes
             )
             pr.disable()
             s = io.StringIO()
@@ -232,61 +181,39 @@ def subdivided_border_main():
     else:
         start_time = time.time()
         subdivided_border_tangent_interpolation_fill(
-            guide_image_file=args.guide_image_file,
-            result_image_file=result_image_file,
+                args.guide_image_file,
+                result_image_file,
             region_defuzz_threshold=args.region_defuzz_threshold,
+            sideways_cut_penalty=args.sideways_cut_penalty,
             border_defuzz_threshold=args.border_defuzz_threshold,
             border_traversal_failure_tolerance=args.border_traversal_failure_tolerance,
             region_proportion_threshold=args.region_proportion_threshold,
             decimate_deviation_cutoff=args.decimate_deviation_cutoff,
             edge_subdivide_ratio=args.edge_subdivide_ratio,
-            config_file_name=args.system_config_file,
+            config_file_name=args.config_file_name,
             mesh_smooth_convergence_ratio=args.mesh_smooth_convergence_ratio,
             polygon_subdivisions=args.polygon_subdivisions,
-            validation_highlight_file_name=args.validation_highlight_file_name
+            validation_highlight_file_name=args.validation_highlight_file_name,
+            stripes=args.stripes
         )
         print(f"Elapsed: {time.time() - start_time}")
 
 
-def test_point_orderer():
-    circle_indices = np.indices([210, 210])
-    flat_indices = np.reshape(circle_indices, [2, -1])
-    flattened_circle = np.less_equal(np.sum(np.square(flat_indices - [[105], [105]]), axis=0), 10000).astype(np.int32)
-    region_array = np.reshape(flattened_circle, [210, 210]).astype(np.int32)
-    left_index_locations = np.argmax(region_array[5:206], axis=1)
-    border_indices_sides = np.concat([
-        circle_indices[:, np.arange(201) + 5, left_index_locations],
-        circle_indices[:, np.arange(201) + 5, 210 - left_index_locations]
-    ], axis=1)
-    border_indices = np.concat([
-        border_indices_sides,
-        np.roll(border_indices_sides, 1, axis=0)
-    ], axis=1).astype(np.int32)
-    border_check = np.zeros([210, 210])
-    border_check[*border_indices] = 1
-    walk_start = time.time()
-    walk = gradengc.order_border_points(np.ascontiguousarray(border_indices), np.ascontiguousarray(region_array))
-    print(f"Walk: {time.time() - walk_start}")
-    walk_filtered = walk[np.greater_equal(walk[:, 0], 0)]
-    walk_check = np.zeros([210, 210])
-    walk_check[*walk_filtered.T] = np.arange(walk_filtered.shape[0]) + 100
-    show_matrix_levels(walk_check)
-    return walk_filtered
+def test_reduce():
+    region = np.reshape(np.indices([2000, 3000]), [2, -1]) + 5
 
-def test_list():
-    os.environ['RUST_BACKTRACE'] = '1'
-    rng = np.random.default_rng()
-    initial_pairing = np.zeros([150, 2], dtype=np.int32)
-    for i in range(50):
-        initial_pairing[i * 3] = [2 * i, 0]
-        initial_pairing[i * 3 + 1] = [2 * i, 1]
-        initial_pairing[i * 3 + 2] = [2 * i + 1, 0]
-    random_pairing = np.copy(initial_pairing)
-    rng.shuffle(random_pairing, axis=0)
-    resorted = gradengrs.test_tree(random_pairing.flatten())
-    assert np.equal(initial_pairing.flatten(), resorted).all()
+    reduce_start = time.time()
+    region_borders = np.array(get_borders_dict([2010, 3010], [region])[0])
+    border_map_time = time.time() - reduce_start
+    border_tree = KDTree(region_borders)
+    border_matches = border_tree.query(region.T)
+    border_distances = border_matches[0]
+    max_distance = np.max(border_distances)
+    middle = np.flatnonzero(np.equal(border_distances, max_distance))
+    reduce_time = time.time() - reduce_start
+    return middle
 
 
 if __name__ == "__main__":
-    # t = test_point_orderer()
+    # cut_up_to_quads([])
     subdivided_border_main()

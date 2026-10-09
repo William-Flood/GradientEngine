@@ -46,20 +46,37 @@ def get_distances_from_segment(points):
     return masked_distances_from_line + masked_distances_from_start + masked_distances_from_end
 
 
-def ramer_douglas_peucker(points, distance_threshold):
+def ramer_douglas_peucker(points, distance_threshold, min_length):
     if points.shape[1] < 3:
         return np.arange(points.shape[1])
     distances = get_distances_from_segment(points)
     max_distance_index = np.argmax(distances)
+    if max_distance_index < min_length:
+        if points.shape[1] > points.shape[1] * 2:
+            max_distance_index = min_length
+        else:
+            max_distance_index = points.shape[1] // 2
+    elif max_distance_index > points.shape[1] - 1 - min_length:
+        if points.shape[1] > points.shape[1] * 2:
+            max_distance_index = points.shape[1] - 1 - min_length
+        else:
+            max_distance_index = points.shape[1] // 2
     if distances[max_distance_index] > distance_threshold:
+        lower_indices = ramer_douglas_peucker(points[:, :max_distance_index], distance_threshold, min_length)[:-1]
+        upper_indices = ramer_douglas_peucker(
+            points[:, max_distance_index:],
+            distance_threshold,
+            min_length)[1:] + max_distance_index
         return np.concat([
-            ramer_douglas_peucker(points[:, :max_distance_index], distance_threshold)[:-1],
+            lower_indices,
             [max_distance_index],
-            ramer_douglas_peucker(points[:, max_distance_index:], distance_threshold)[1:] + max_distance_index
+            upper_indices
         ])
     else:
         return np.array([0, points.shape[1] - 1])
 
 
-def decimate(border: Border, distance_threshold):
-    border.decomposed_points = border.full_points[:, ramer_douglas_peucker(border.full_points, distance_threshold)]
+def decimate(border: Border, distance_threshold, min_length):
+    decomposition_indices = ramer_douglas_peucker(border.full_points, distance_threshold, min_length)
+    border_decomposed_points = border.full_points[:, decomposition_indices]
+    border.decomposed_points = border_decomposed_points

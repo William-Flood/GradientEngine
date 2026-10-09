@@ -1,0 +1,8 @@
+#version 330 core
+
+in vec3 fragment_color;
+out vec4 screen_color;
+
+void main() {
+    screen_color = vec4(fragment_color, 1.0);
+}

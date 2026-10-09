@@ -12,15 +12,11 @@ from util.config import config_obj
 from util.rasterize import rasterize_line
 
 
-def get_region_border(region, target_region, image_shape):
+def get_region_border(region, target_region_borders, image_shape):
     region_point_map = np.zeros(image_shape, dtype=bool)
-    region_point_map[*target_region] = True
-    region_point_adjacency = get_neighbor_values_over_array(
-        region_point_map,
-        region
-    )
-    contacts_region = np.any(region_point_adjacency, axis=1)
-    return region[:, contacts_region]
+    region_point_map[*target_region_borders] = True
+    region_overlaps_border = region_point_map[*region]
+    return region[:, region_overlaps_border]
 
 
 def find_default_connection_points_and_distances_between(
@@ -250,13 +246,13 @@ def find_intra_target_borders(inside_regions, outside_regions, sideways_cut_pena
     return np.unique(traversal_points, axis=1)
 
 
-def get_split_regions_borders(inside_regions, outside_regions, target_region, image_shape, sideways_cut_penalty):
+def get_split_regions_borders(inside_regions, outside_regions, region_borders, image_shape, sideways_cut_penalty):
     if len(outside_regions) == 0:
         outside_points = get_outside_coords(image_shape)
     else:
         outside_points = np.concat([*outside_regions, get_outside_coords(image_shape)], axis=1)
-    outside_border = get_region_border(outside_points, target_region, image_shape)
-    inside_borders = [get_region_border(region, target_region, image_shape) for region in inside_regions]
+    outside_border = get_region_border(outside_points, region_borders, image_shape)
+    inside_borders = [get_region_border(region, region_borders, image_shape) for region in inside_regions]
     between_borders = find_intra_target_borders(inside_borders, outside_border, sideways_cut_penalty)
     return between_borders
 
@@ -299,7 +295,7 @@ def find_hole_points(points, image_shape):
     return interior_region_points, outside_region_points
 
 
-def split_region(points, image_shape, sideways_cut_penalty):
+def split_region(points, region_borders, image_shape, sideways_cut_penalty):
     inside_regions, outside_regions = find_hole_points(points, image_shape)
     if len(inside_regions) == 0:
         return [points]
@@ -307,7 +303,7 @@ def split_region(points, image_shape, sideways_cut_penalty):
         between_borders: NDArray = get_split_regions_borders(
             inside_regions,
             outside_regions,
-            points,
+            region_borders,
             image_shape,
             sideways_cut_penalty
         )
@@ -327,6 +323,8 @@ def split_region(points, image_shape, sideways_cut_penalty):
             border_assignments = np.take_along_axis(between_borders_neighbors, border_assignment_indices, axis=1)
             new_regions_matrix[*points_to_fill] = border_assignments[:, 0]
             points_to_fill = points_to_fill[:, np.equal(new_regions_matrix[*points_to_fill], -1)]
+        new_regions_matrix[*np.concat(inside_regions, axis=1)] = -1
+        new_regions_matrix[*np.concat(outside_regions, axis=1)] = -1
         return [np.array(
             np.nonzero(
                 np.equal(new_regions_matrix, region_id)

@@ -7,6 +7,7 @@ from numpy.typing import NDArray
 from regions.region import Region
 from gradengrs import get_borders_dict
 import time
+from util.inspection_utils import test_region
 
 
 def check_inner_loops(image_shape, region_border_points):
@@ -17,22 +18,26 @@ def check_inner_loops(image_shape, region_border_points):
 
 
 def remove_holes(region_points, values_array, sideways_cut_penalty):
-    test_i = 0
-    region_border_points = get_borders_dict(values_array.shape, region_points)
-    for point_id, points in enumerate(region_points):
-        if values_array[*points[:, 0]] == -1:
-            yield points
-        else:
-            if check_inner_loops(values_array.shape, region_border_points[point_id]):
-                split_point_set = split_region(points, values_array.shape, sideways_cut_penalty)
-                if len(split_point_set) > 1:
-                    for point_set in split_point_set:
-                        yield point_set
-                else:
-                    yield split_point_set[0]
+    regions_border_points = get_borders_dict(values_array.shape, region_points)
+    region_border_split_checks = [
+        values_array[*region[:, 0]] != -1 and check_inner_loops(values_array.shape, regions_border_points[point_id])
+        for point_id, region in enumerate(region_points)
+    ]
+    split_regions_count = region_border_split_checks.count(True)
+    split_region_id = 1
+    for point_id, (points, check_result) in enumerate(zip(region_points, region_border_split_checks)):
+        if check_result:
+            print(f"Splitting {split_region_id} of {split_regions_count}", end="\r")
+            split_region_id += 1
+            region_border_points = np.array(regions_border_points[point_id]).T
+            split_point_set = split_region(points, region_border_points, values_array.shape, sideways_cut_penalty)
+            if len(split_point_set) > 1:
+                for point_set in split_point_set:
+                    yield point_set
             else:
-                yield points
-        test_i += 1
+                yield split_point_set[0]
+        else:
+            yield points
 
 def find_region_to_merge(region_points, min_region, region_select_index):
     region_map = coo_array(
@@ -52,16 +57,17 @@ def defuzz_regions(region_points: list[NDArray], values_array, defuzz_threshold)
         min_region = region_points[min_index]
         region_value = values_array[*min_region[:, 0]]
         region_values_search = np.copy(get_neighbor_values_over_array(values_array, min_region)).flatten()
-        neighbor_to_merge_into_candidates = np.equal(region_values_search, region_value) | \
-            np.equal(region_values_search, -1)
+        neighbor_to_merge_into_candidates = np.logical_not(np.equal(region_values_search, region_value) | \
+            np.equal(region_values_search, -1))
         if not neighbor_to_merge_into_candidates.any():
-            neighbor_to_merge_into_candidates = np.equal(region_values_search, region_value)
-        region_values_search[neighbor_to_merge_into_candidates] = None
+            neighbor_to_merge_into_candidates = np.not_equal(region_values_search, region_value)
+        region_values_search[np.logical_not(neighbor_to_merge_into_candidates)] = None
         region_select_index = np.nanargmin(np.absolute(region_values_search - region_value))
         region_to_merge_into = find_region_to_merge(region_points, min_region, region_select_index)
         new_list = region_points.copy()
         new_list[region_to_merge_into] = np.concat([region_points[region_to_merge_into], min_region], axis=1)
         del new_list[min_index]
+        values_array[*min_region] = region_values_search[region_select_index]
         return defuzz_regions(new_list, values_array, defuzz_threshold)
     else:
         return region_points
@@ -75,13 +81,19 @@ def get_value_mode(values_array, points):
 def identify_image_regions(values_array, defuzz_threshold, sideways_cut_penalty):
     print("Creating initial region map")
     regions_points = identify_regions(values_array)
-    defuzzed_regions_points = defuzz_regions(regions_points, values_array, defuzz_threshold)
-    assert np.all(coo_array(
+    initial_map = coo_array(
+        (np.concat([[rid]*points.shape[1] for rid, points in enumerate(regions_points)]),
+            np.concat(regions_points, axis=1)),
+        shape=values_array.shape
+    )
+    defuzzed_regions_points = defuzz_regions(regions_points, np.copy(values_array), defuzz_threshold)
+    defuzzed_map = coo_array(
         (
-            [True] * sum([points.shape[1] for points in defuzzed_regions_points]),
+            np.concat([[rid + 1]*points.shape[1] for rid, points in enumerate(regions_points)]),
             np.concat(defuzzed_regions_points, axis=1)
          ), shape=values_array.shape
-    ).toarray())
+    ).toarray()
+    assert np.greater(defuzzed_map, 0).all()
     split_region_points = []
     rh_start = time.time()
     for points in remove_holes(defuzzed_regions_points, values_array, sideways_cut_penalty):

@@ -1,8 +1,9 @@
 from regions.region import Region
-from polygon.smooth import smooth_region_polygons
 import numpy as np
+from util.inspection_utils import *
+from util.rasterize import rasterize_polygon
 
-def subdivide(regions: list[Region], subdivisions, mesh_smooth_convergence_ratio):
+def subdivide(regions: list[Region], subdivisions):
     for region in regions:
         new_polygons = []
         for polygon in region.polygons:
@@ -24,4 +25,3 @@ def subdivide(regions: list[Region], subdivisions, mesh_smooth_convergence_ratio
                 for tsub in range(subdivisions) for bsub in range(subdivisions)
             ])
         region.polygons = new_polygons
-    smooth_region_polygons(regions, mesh_smooth_convergence_ratio)

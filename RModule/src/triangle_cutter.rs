@@ -1,5 +1,5 @@
-
-use crate::mesh::{Edge, Polygon, Vertex};
+use crate::mesh::ConnectionResult::{FluidBorder, FrozenBorder, VoidBorder};
+use crate::mesh::{Edge, Polygon, Vertex, ConnectionResult};
 use crate::mesh;
 
 #[derive(Clone, Copy)]
@@ -33,8 +33,8 @@ struct PolygonButcher<'a> {
 }
 
 impl<'a> PolygonButcher<'a> {
-    fn get_connections(&self, edges: &Vec<Edge>) -> Vec<Option<usize>> {
-        self.polygon.get_connections(edges)
+    fn get_connections(&self, edges: &Vec<Edge>) -> Vec<ConnectionResult> {
+        self.polygon.get_filtered_connections(edges)
     }
     pub fn end_cut(&self, cut_edge: usize, vertices: &Vec<Vertex>, edges: &Vec<Edge>) -> Vec<TempPolygon> {
         // Produces a data object to regenerate the mesh after cutting from this polygon
@@ -201,17 +201,29 @@ impl<'a> TriangleCutPlanner<'a> {
         let search_boundary = self.cut_paths.last().expect("get_search_boundary called on an uninitialized TriangleCutPlanner");
         for (search_node_index, search_node) in search_boundary.iter().enumerate() {
             for (search_polygon_edge_index, connection) in search_node.butcher.get_connections(edges).iter().enumerate() {
-                let connected_polygon_index = connection.expect("Navigated from void boundary");
-                if !self.search_mask[connected_polygon_index] {
-                    self.search_mask[connected_polygon_index] = true;
-                    let polygon_to = &polygons[connected_polygon_index];
+                let connected_polygon_id;
+                let connected_edge_id;
+                match connection {
+                    FluidBorder(connected_edge, connected_polygon) => {
+                        connected_polygon_id = *connected_polygon;
+                        connected_edge_id = connected_edge;
+                    },
+                    FrozenBorder => {continue;},
+                    VoidBorder => panic!("Navigated from void boundary")
+                }
+                if !self.search_mask[connected_polygon_id] {
+                    self.search_mask[connected_polygon_id] = true;
+                    let polygon_to = &polygons[connected_polygon_id];
+                    let Some(edge_cut_to) = polygon_to.edges.iter().position(|eid| eid == connected_edge_id)
+                    else {
+                        panic!("Attempting to find the edge on a polygon that doesn't contain it");
+                    };
                     next_search_layer.push(CutPlanStep { 
                         butcher: PolygonButcher { polygon: polygon_to }, 
                         previous_step_reference: Some(CutPlanPreviousStepReference{
                             last_step_index: search_node_index,
                             edge_cut_from: search_polygon_edge_index,
-                            edge_cut_to: polygon_to.edges.iter().position(|e| *e == search_node.butcher.polygon.edges[search_polygon_edge_index])
-                                .expect("Attempting to find the edge on a polygon that doesn't contain it")
+                            edge_cut_to
                         }) 
                     });
                 }
@@ -302,101 +314,11 @@ fn get_cut_trianges(cut_steps: Vec<CutPlanStep>, vertices: &Vec<Vertex>, edges: 
 
 
 
-mod merge {
+mod merge_in_temp {
     use super::{TempPolygon, Vertex, Edge, Polygon};
-    use crate::{find_index_in, mesh};
+    use crate::mesh;
+    use crate::merge::{VertexMerger, EdgeMerger};
 
-    struct VertexMerger<'a> {
-        vertices: &'a mut Vec<Vertex>,
-        old_ids: Vec<usize>,
-        new_old_map: Option<Vec<usize>>
-    }
-
-    impl<'a> VertexMerger<'a> {
-        fn new(vertices: &'a mut Vec<Vertex>) -> Self {
-            let old_ids = vertices.iter().map(|v| v.id).collect();
-            VertexMerger { vertices, old_ids, new_old_map: None }
-        }
-        fn insert (&mut self, y: usize, x: usize) {
-            let new_id = self.vertices.len();
-            find_index_in::insert_into_double_key_ordered(
-                y,
-                x,
-                self.vertices,
-                || Vertex { id: new_id, y: y, x: x, edges: Vec::new() }
-            );
-        }
-        fn map_old_and_refresh_ids(&mut self) {
-            let mut is_old = vec![false; self.vertices.len()];
-            for old_id in &self.old_ids {
-                is_old[*old_id] = true;
-            }
-            let mut new_old_map = Vec::with_capacity(self.old_ids.len());
-            for (new_position, vertex) in self.vertices.iter_mut().enumerate() {
-                if is_old[vertex.id] {
-                    new_old_map.push(new_position);
-                }
-                vertex.id = new_position;
-            }
-            self.new_old_map = Some(new_old_map);
-        }
-        fn find_in(&self, y: usize, x:usize) -> Option<usize> {
-            find_index_in::find_index_in(
-                    y, 
-                    x, 
-                    self.vertices)
-        }
-    }
-
-    
-    struct EdgeMerger<'a> {
-        edges: &'a mut Vec<Edge>,
-        old_ids: Vec<usize>,
-        new_old_map: Option<Vec<usize>>
-    }
-
-    impl<'a> EdgeMerger<'a> {
-        fn new(edges: &'a mut Vec<Edge>) -> Self {
-            let old_ids = edges.iter().map(|v| v.id).collect();
-            EdgeMerger { edges, old_ids, new_old_map: None }
-        }
-        fn insert (&mut self, vertex_1: usize, vertex_2: usize) {
-            let new_id = self.edges.len();
-            find_index_in::insert_into_double_key_ordered(
-                vertex_1,
-                vertex_2,
-                self.edges,
-                || Edge { id: new_id, vertex_1, vertex_2, polygons: Vec::new() }
-            );
-        }
-        fn map_old_and_refresh_ids(&mut self) {
-            let mut is_old = vec![false; self.edges.len()];
-            for old_id in &self.old_ids {
-                is_old[*old_id] = true;
-            }
-            let mut new_old_map = Vec::with_capacity(self.old_ids.len());
-            for (new_position, edge) in self.edges.iter_mut().enumerate() {
-                if is_old[edge.id] {
-                    new_old_map.push(new_position);
-                }
-                edge.id = new_position;
-            }
-            self.new_old_map = Some(new_old_map);
-        }
-        fn find_in(&self, vertex_1: usize, vertex_2: usize) -> Option<usize> {
-            find_index_in::find_index_in(
-                vertex_1,
-                vertex_2,
-                    self.edges)
-        }
-        fn remap_vertex_lists(&mut self, vertex_merger: &VertexMerger) {
-            let new_old_index_map = vertex_merger.new_old_map.as_ref().expect("Vertex old to new map retrieved before binding");
-            for edge in &mut *self.edges {
-                edge.vertex_1 = new_old_index_map[edge.vertex_1];
-                edge.vertex_2 = new_old_index_map[edge.vertex_2];
-            }
-        }
-    }
 
     fn merge_vertices_from(vertex_merger: &mut VertexMerger, new_polygons: &Vec<TempPolygon>) {
         // Use the data generated for the polygons to add to the mesh to update the list of vertexes
@@ -420,7 +342,7 @@ mod merge {
                 .collect();
                 let point_count = new_polygon.ys.len();
                 let (vertex_1_id, vertex_2_id) = mesh::get_edge_vertex_indices(&coord_array, point_count, edge_index, vertex_merger.vertices);
-                edge_merger.insert(vertex_1_id, vertex_2_id);
+                edge_merger.insert(vertex_1_id, vertex_2_id, vertex_merger.vertices);
             }
         }
         edge_merger.map_old_and_refresh_ids();
@@ -471,9 +393,21 @@ mod merge {
                 polygon_vertexes.push(vertex_index);
                 polygon_edges.push(edge_index);
             }
-            polygons.push(
-                Polygon { id: new_id, original_id: new_polygon.original_rect, vertices: polygon_vertexes, edges: polygon_edges }
-            );
+            let mut duplicate_check = false;
+            for lower_index in 0..(polygon_vertexes.len()) {
+                for upper_index in (lower_index + 1)..(polygon_vertexes.len()) {
+                    let vertex_index_1 = polygon_vertexes[lower_index];
+                    let vertex_index_2 = polygon_vertexes[upper_index];
+                    if vertex_index_1 == vertex_index_2 {
+                        duplicate_check = true;
+                    }
+                }
+            }
+            if !duplicate_check {
+                polygons.push(
+                    Polygon { id: new_id, original_id: new_polygon.original_rect, vertices: polygon_vertexes, edges: polygon_edges }
+                );
+            }
         }
 
     }
@@ -501,17 +435,20 @@ pub fn cut_out_trianges(
     let mut edge_list = mesh::get_edge_vector(&polygon_coords, &vertex_list);
     let mut polygons = mesh::get_polygons(&polygon_coords, &vertex_list, &edge_list);
     mesh::connect_mesh(&mut vertex_list,  &mut edge_list, &polygons);
-    let border_cuts: Vec<TempPolygon> = polygons.iter()
-        .map(|p| PolygonButcher {polygon: p})
-        .map(|pb| pb.to_quad_if_void_border(&vertex_list, &edge_list))
-    .filter_map(|pt| pt).collect();
-    merge::merge_new_polygons(border_cuts, &mut vertex_list, &mut edge_list, &mut polygons);
-    assert!(!polygons.iter().any(|p| p.is_void_border(&edge_list) && p.is_triangle()));
     while polygons.iter().any(|p| p.is_triangle()) {
-        let cut_steps = find_cut(&polygons, &edge_list);
-        let new_polygons = get_cut_trianges(cut_steps, &vertex_list, &edge_list);
+        let new_polygons: Vec<TempPolygon>;
+        if polygons.iter().any(|p| p.is_void_border(&edge_list) && p.is_triangle()) {
+            new_polygons = polygons.iter()
+                .map(|p| PolygonButcher {polygon: p})
+                .map(|pb| pb.to_quad_if_void_border(&vertex_list, &edge_list))
+            .filter_map(|pt| pt).collect();
+        }
+        else {
+            let cut_steps = find_cut(&polygons, &edge_list);
+            new_polygons = get_cut_trianges(cut_steps, &vertex_list, &edge_list);
+        }
         assert_ne!(new_polygons.len(), 0);
-        merge::merge_new_polygons(new_polygons, &mut vertex_list, &mut edge_list, &mut polygons);
+        merge_in_temp::merge_new_polygons(new_polygons, &mut vertex_list, &mut edge_list, &mut polygons);
     }
 
     (polygons, vertex_list)

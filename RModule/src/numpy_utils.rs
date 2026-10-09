@@ -1,6 +1,7 @@
-use numpy::{PyReadonlyArray2};
+use numpy::{PyReadonlyArray};
+use numpy::ndarray::Dimension;
 
-pub fn numpy_to_vec<T: numpy::Element + Clone>(arr: &PyReadonlyArray2<'_, T>) -> Vec<T> {
+pub fn numpy_to_vec<T: numpy::Element + Clone, U: Dimension>(arr: &PyReadonlyArray<'_, T, U>) -> Vec<T> {
 
     let data_and_size = arr
         .as_array()

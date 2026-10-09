@@ -123,6 +123,9 @@ class Mesh:
         )
         polygon_edge_vertex_indices = get_polygon_edge_vertex_indices(polygon, self.vertex_index_lookup)
         polygon_edge_indices = self.get_edge_indices(polygon_edge_vertex_indices)
+        existing_edge_occurrences = self.edge_index_and_polygon[0, np.isin(self.edge_index_and_polygon[0], polygon_edge_indices)]
+        _, edge_counts = np.unique(existing_edge_occurrences, return_counts=True)
+        assert np.less(edge_counts, 2).all()
         new_edge_polygon_indices = np.less(polygon_edge_indices, 0)
         new_edges = polygon_edge_vertex_indices[:, new_edge_polygon_indices]
         next_edge_index = self.edge_list.shape[1]
@@ -193,7 +196,8 @@ class Mesh:
         if np.equal(vertex_indices, -1).any():
             return -1
         vertex_polygon_mask = self.vertex_polygon_lookup[vertex_indices].toarray()
-        polygon_mask = np.all(vertex_polygon_mask, axis=0)
+        polygon_mask = np.all(vertex_polygon_mask, axis=0) & \
+                       np.equal(np.sum(self.vertex_polygon_lookup, axis=0), points.shape[1])
         if polygon_mask.any():
             return self.polygon_ids[np.argmax(polygon_mask)]
         else:
@@ -208,7 +212,7 @@ class Mesh:
         vertex_indices = self.get_indices(edge_points)
         if np.equal(vertex_indices, -1).any():
             return -1, None
-        edge_index = self.get_edge_indices(np.sort(vertex_indices[:, np.newaxis]))[0]
+        edge_index = self.get_edge_indices(np.sort(vertex_indices[:, np.newaxis], axis=0))[0]
         if np.equal(edge_index, -1).any():
             return -1, None
         edge_polygon_row = self.edge_polygon_lookup[edge_index].toarray()

@@ -8,18 +8,27 @@ mod numpy_utils;
 mod mesh;
 mod find_index_in;
 mod smooth_polys;
-mod triangle_cutter_python_interface;
+mod mesh_python_interface;
+mod decimate;
+mod merge;
+mod edge_intersection_handler;
+mod segment_intersection;
 #[pyo3::pymodule]
 mod gradengrs {
-  use pyo3::prelude::*;
-  use pyo3::types::PyList;
+  use pyo3::Bound;
+use pyo3::prelude::*;
+  use pyo3::pyfunction;
+use pyo3::types::PyList;
   use pyo3::types::PyDict;
-  use numpy::{PyArray, Ix2};
-  use crate::triangle_cutter_python_interface;
+  use numpy::{PyArray, Ix2, PyArray2, PyArray3};
+  use crate::mesh_python_interface;
   use crate::triangle_cutter;
   #[pymodule_export]
-  use crate::triangle_cutter_python_interface::PolygonResult;
+  use crate::mesh_python_interface::PolygonResult;
   use crate::smooth_polys;
+  use crate::decimate;
+  use crate::edge_intersection_handler;
+  use crate::segment_intersection;
 
   #[pyfunction]
   fn get_borders_dict<'py>(
@@ -45,9 +54,9 @@ mod gradengrs {
     py: Python<'py>,
     polygons: Bound<'py, PyList>
   ) -> PyResult<Bound<'py, PyList>> {
-    let polygon_vector = triangle_cutter_python_interface::get_polygon_vector(polygons)?;
+    let polygon_vector = mesh_python_interface::get_polygon_vector(polygons)?;
     let (rectancles, vertices) = triangle_cutter::cut_out_trianges(polygon_vector);
-    triangle_cutter_python_interface::get_polygon_results(py, rectancles, vertices)
+    mesh_python_interface::get_polygon_results(py, rectancles, vertices)
   }
 
   #[pyfunction]
@@ -56,15 +65,43 @@ mod gradengrs {
     polygons: Bound<'py, PyList>,
     convergence_ratio: f32
   ) -> PyResult<Bound<'py, PyList>> {
-    let polygon_vector = triangle_cutter_python_interface::get_polygon_vector(polygons)?;
+    let polygon_vector = mesh_python_interface::get_polygon_vector(polygons)?;
     let (rectancles, vertices) = smooth_polys::smooth_polygons(polygon_vector, convergence_ratio);
-    triangle_cutter_python_interface::get_polygon_results(py, rectancles, vertices)
+    mesh_python_interface::get_polygon_results(py, rectancles, vertices)
   }
 
   #[pyfunction]
   fn test_tree<'py>(
     list: Vec<usize>
   ) -> PyResult<Vec<usize>> {
-    super::triangle_cutter_python_interface::test_tree(list)
+    super::mesh_python_interface::test_tree(list)
+  }
+
+  #[pyfunction]
+  fn decimate_mesh<'py> (
+    py: Python<'py>,
+    polygons: Bound<'py, PyList>,
+    keep_distance: i32) -> PyResult<Bound<'py, PyList>> {
+    let polygon_vector = mesh_python_interface::get_polygon_vector(polygons)?;
+    let (polygons, vertices) = decimate::decimate(polygon_vector, keep_distance);
+    mesh_python_interface::get_polygon_results(py, polygons, vertices)
+  }
+  #[pyfunction]
+  fn remove_intersecting_edges<'py> (
+    py: Python<'py>,
+    polygons: Bound<'py, PyList>) -> PyResult<Bound<'py, PyList>> {
+      let polygon_vector = mesh_python_interface::get_polygon_vector(polygons)?;
+      let (polygons, vertices) = 
+        edge_intersection_handler::remove_intersecting_edges(polygon_vector);
+      mesh_python_interface::get_polygon_results(py, polygons, vertices)
+    }
+
+  #[pyfunction]
+  fn check_intersections<'py>(
+    py: Python<'py>,
+      segments_1: Bound<'py, PyArray3<i32>>,
+      segments_2: Bound<'py, PyArray3<i32>>
+  ) -> PyResult<Bound<'py, PyArray2<bool>>> {
+    segment_intersection::check(py, segments_1, segments_2)
   }
 }

@@ -1,6 +1,8 @@
 import math
 from collections import defaultdict
 
+from numpy.polynomial.polynomial import polymul
+
 from regions.region import Region
 import numpy as np
 from numpy.typing import NDArray
@@ -10,7 +12,9 @@ from polygon.polygon_ideal_cuts import find_ideal_cuts
 from polygon.cut_polygon import cut_polygon
 from polygon.mesh import Mesh
 from util.rasterize import rasterize_line, rasterize_polygon
-from time import time
+from time import time, sleep
+from polygon.check_segment_intersections import check_intersections
+import threading
 
 
 def get_corner_zs(polygon):
@@ -57,28 +61,14 @@ def check_cut_nonintersecting(polygon, cuts):
     Returns: A boolean mask where True indicates a valid cut
 
     """
-    x1 = polygon[1, cuts[:, 0], np.newaxis]
-    x2 = polygon[1, cuts[:, 1], np.newaxis]
-    y1 = polygon[0, cuts[:, 0], np.newaxis]
-    y2 = polygon[0, cuts[:, 1], np.newaxis]
-    x3 = polygon[np.newaxis, 1]
-    y3 = polygon[np.newaxis, 0]
-    rolled_polygon = np.roll(polygon, 1, axis=1)
-    x4 = rolled_polygon[np.newaxis, 1]
-    y4 = rolled_polygon[np.newaxis, 0]
-
-    t = np.divide(
-        np.multiply((x1 - x3), (y3 - y4)) - np.multiply((y1 - y3), (x3 - x4)),
-        np.multiply((x1 - x2), (y3 - y4)) - np.multiply((y1 - y2), (x3 - x4))
+    segments_1 = polygon[:, cuts]
+    segments_2 = np.stack(
+        [polygon, np.roll(polygon, 1, axis=1)],
+        axis=2
     )
-
-    u = np.divide(
-        np.multiply((y1 - y2), (x1 - x3)) - np.multiply((x1 - x2), (y1 - y3)),
-        np.multiply((x1 - x2), (y3 - y4)) - np.multiply((y1 - y2), (x3 - x4))
+    lines_intersect = check_intersections(
+            segments_1, segments_2
     )
-    intersection_in_cut = np.greater(t, 0) & np.less(t, 1)
-    intersection_in_edge = np.greater(u, 0) & np.less(u, 1)
-    lines_intersect = intersection_in_cut & intersection_in_edge
     are_nonintersecting_cuts = np.logical_not(
         np.any(
             lines_intersect,
@@ -89,6 +79,10 @@ def check_cut_nonintersecting(polygon, cuts):
     if are_nonintersecting_cuts.any():
         return are_nonintersecting_cuts
 
+    x1 = polygon[1, cuts[:, 0], np.newaxis]
+    x2 = polygon[1, cuts[:, 1], np.newaxis]
+    y1 = polygon[0, cuts[:, 0], np.newaxis]
+    y2 = polygon[0, cuts[:, 1], np.newaxis]
     cut_vectors = np.stack([y1, x1], axis=0) - np.stack([y2, x2], axis=0)
     edge_vectors = polygon - np.roll(polygon, 1, axis=1)
     cut_unit_vectors = cut_vectors / np.linalg.norm(cut_vectors, axis=0, keepdims=True)
@@ -214,8 +208,13 @@ def find_best_cut_between_existing(polygon, candidate_vertices, cross_zs):
 def subdivide_edge(polygon, edge):
     return (polygon[:, (edge + 1) % polygon.shape[1]] + polygon[:, edge]) // 2
 
+def filter_by_cut_length(polygon, cuts, min_length):
+    cut_deviations = polygon[:, cuts[:, 1]] - polygon[:, cuts[:, 0]]
+    cut_lengths = np.linalg.norm(cut_deviations, axis=0)
+    return cuts[np.greater(cut_lengths, min_length)]
 
-def find_best_cut_to_edge(polygon, edge, candidate_vertices):
+
+def find_best_cut_to_edge(polygon, edge, candidate_vertices, min_length):
     vertex_count = polygon.shape[1]
     edge_vector = polygon[:, (edge + 1) % polygon.shape[1]] - polygon[:, edge]
     edge_unit_vector: NDArray = edge_vector / np.linalg.norm(edge_vector)
@@ -253,11 +252,12 @@ def find_best_cut_to_edge(polygon, edge, candidate_vertices):
     connection_list_2 = connection_list_1[np.logical_not(
         np.isin(vertex_index_distance, [0, 1, edge_subdivided_vertex_count - 1])
     )]
-    if connection_list_2.shape[0] > 0:
-        connection_list_3 = rank_evenness_preserving_cuts(connection_list_2)
-        are_valid_cuts = check_cut(edge_subdivided_polygon, connection_list_3, False)
+    connection_list_3 = filter_by_cut_length(edge_subdivided_polygon, connection_list_2, min_length)
+    if connection_list_3.shape[0] > 0:
+        connection_list_4 = rank_evenness_preserving_cuts(connection_list_2)
+        are_valid_cuts = check_cut(edge_subdivided_polygon, connection_list_4, False)
         if are_valid_cuts.any():
-            selected_cut = connection_list_3[np.argmax(are_valid_cuts)]
+            selected_cut = connection_list_4[np.argmax(are_valid_cuts)]
             return edge_subdivided_polygon, selected_cut
         else:
             return None, None
@@ -265,7 +265,7 @@ def find_best_cut_to_edge(polygon, edge, candidate_vertices):
         return None, None
 
 
-def choose_cut(polygon, edge_subdivide_ratio, cross_zs):
+def choose_cut(polygon, edge_subdivide_ratio, cross_zs, min_allowed_length):
     cut = None
     edge_cut_data = None
     ups = np.greater(cross_zs, 0)
@@ -286,13 +286,13 @@ def choose_cut(polygon, edge_subdivide_ratio, cross_zs):
     edge_lengths = np.linalg.norm(edges, axis=0)
     min_length = min(edge_lengths)
     max_length = max(edge_lengths)
-    if max_length / min_length > edge_subdivide_ratio:
+    if max_length / min_length > edge_subdivide_ratio and max_length > min_allowed_length * 2:
         edge = np.argmax(edge_lengths)
         if cross_zs[edge] * cross_zs[(edge + 1) % polygon.shape[1]] > 0:
             candidate_vertices = np.flatnonzero(np.less_equal(cross_zs * cross_zs[edge], 0))
         else:
             candidate_vertices = concave_ids
-        subdivided_polygon, cut = find_best_cut_to_edge(polygon, edge, candidate_vertices)
+        subdivided_polygon, cut = find_best_cut_to_edge(polygon, edge, candidate_vertices, min_allowed_length)
         if subdivided_polygon is not None:
             original_edge = np.stack([polygon[:, edge], polygon[:, (edge + 1) % polygon.shape[1]]], axis=1)
             edge_cut_data = (subdivided_polygon, original_edge)
@@ -354,10 +354,10 @@ def make_cut(
     # assert len(check_ids) == mesh_ids.size
     # for check_id, mesh_id in zip(check_ids, mesh_ids):
     #     assert check_id == mesh_id
-    # assert mesh.polygon_ids.size == mesh_ids.size
+    assert mesh.polygon_ids.size == mesh_ids.size
 
 
-def cut_concave_regions(regions: list[Region], edge_subdivide_ratio):
+def cut_concave_regions(regions: list[Region], edge_subdivide_ratio, min_length):
     non_transparent_regions = [region for region in regions if region.value != -1]
     remaining_list = [polygon for region in non_transparent_regions for polygon in region.polygons]
     remaining_list_region = [region.id for region in non_transparent_regions for _ in region.polygons]
@@ -387,7 +387,7 @@ def cut_concave_regions(regions: list[Region], edge_subdivide_ratio):
                 )
             ]
         else:
-            cut, edge_cut_data = choose_cut(polygon, edge_subdivide_ratio, region_corner_zs)
+            cut, edge_cut_data = choose_cut(polygon, edge_subdivide_ratio, region_corner_zs, min_length)
             make_cut(
                 polygon,
                 cut,
@@ -399,10 +399,13 @@ def cut_concave_regions(regions: list[Region], edge_subdivide_ratio):
                 polygon_mesh,
                 mesh_ids_wrapped
             )
-        # if cut_iteration % 2 == 0 and cut_iteration > 335:
-        # if cut_iteration > 332:
+        # if cut_iteration % 10 == 0 and cut_iteration >= 20:
+        # if polygon_region == 79:
+        #     region_79_polys = [polygon for polygon, region_id in zip(remaining_list + cut_results, remaining_list_region + cut_results_region) if region_id == 79]
         #     test_rasterization.append(([2000, 3000], np.concat([rasterize_polygon(polygon) for polygon in remaining_list + cut_results], axis=1)))
-        #     test_region([2000, 3000], np.concat([rasterize_polygon(polygon) for polygon in remaining_list + cut_results], axis=1))
+        #     # test_region([2000, 3000], np.concat([rasterize_polygon(polygon) for polygon in cut_results], axis=1))
+        #     test_region([10000, 15000], np.concat([rasterize_polygon(polygon * 5) for polygon in region_79_polys], axis=1))
+        #     sleep(2)
         cut_iteration += 1
         timings.append(time() - cut_start)
     new_region_polygon_matcher = defaultdict(list)
