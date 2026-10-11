@@ -1,6 +1,8 @@
 import numpy as np
 from regions.region import Region
 from PIL import Image
+from polygon.mesh import Mesh
+from util.rasterize import rasterize_line
 
 def validate_region_polygons(
         regions: list[Region],

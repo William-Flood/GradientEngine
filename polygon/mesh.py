@@ -19,7 +19,7 @@ class Mesh:
         self.polygon_per_polygon_vertex = np.concat(
             [[polygon_id] * polygon.shape[1] for polygon_id, polygon in enumerate(polygons)])
         self.vertex_list = np.unique(polygon_vertex_coordinates, axis=1)
-        self.polygon_vertex_indices = self.get_indices(polygon_vertex_coordinates)
+        self.polygon_vertex_indices = self.get_vertex_indices(polygon_vertex_coordinates)
         polygon_edge_vertex_indices = np.concat(
             list(map(lambda polygon: get_polygon_edge_vertex_indices(polygon, self.vertex_index_lookup), polygons)),
             axis=1
@@ -47,8 +47,8 @@ class Mesh:
         # )
 
 
-    def get_indices(self, points):
-        vertex_index_lookup =  coo_array(
+    def get_vertex_indices(self, points):
+        vertex_index_lookup = coo_array(
             (np.arange(self.vertex_list.shape[1]) + 1, self.vertex_list),
             shape=np.max(
                 np.concat([self.vertex_list, points], axis=1),
@@ -110,7 +110,7 @@ class Mesh:
         return edge_index_lookup[*edge_vertex_indices].toarray() - 1
 
     def add_polygon(self, polygon):
-        polygon_vertex_indices = self.get_indices(polygon)
+        polygon_vertex_indices = self.get_vertex_indices(polygon)
         new_point_polygon_indices = np.less(polygon_vertex_indices, 0)
         new_vertices, vertex_index = np.unique(polygon[:, new_point_polygon_indices], axis=1, return_inverse=True)
         next_vertex_index = self.vertex_list.shape[1]
@@ -192,7 +192,7 @@ class Mesh:
             np.max(self.vertex_list, axis=1, keepdims=True)
         )):
             return -1
-        vertex_indices = self.get_indices(points)
+        vertex_indices = self.get_vertex_indices(points)
         if np.equal(vertex_indices, -1).any():
             return -1
         vertex_polygon_mask = self.vertex_polygon_lookup[vertex_indices].toarray()
@@ -209,7 +209,7 @@ class Mesh:
             np.max(self.vertex_list, axis=1, keepdims=True)
         )):
             return -1, None
-        vertex_indices = self.get_indices(edge_points)
+        vertex_indices = self.get_vertex_indices(edge_points)
         if np.equal(vertex_indices, -1).any():
             return -1, None
         edge_index = self.get_edge_indices(np.sort(vertex_indices[:, np.newaxis], axis=0))[0]

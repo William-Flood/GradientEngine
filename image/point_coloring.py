@@ -89,10 +89,6 @@ def color_vertices(regions: list[Region]):
             border_values,
             np.full([middles.shape[1]], region.value)
         ])
-        interpolation_visualizer_1 = np.zeros([1782, 3000, 4], dtype=np.uint8)
-        interpolation_visualizer_1[*interpolation_points, :3] = interpolation_values[:, np.newaxis]
-        interpolation_visualizer_1[*interpolation_points, 3] = 255
-        Image.fromarray(interpolation_visualizer_1).save(f"sample_interpolation\\{region.id}.png")
         # interpolator = CloughTocher2DInterpolator(interpolation_points.T, interpolation_values)
         interpolator = LinearNDInterpolator(interpolation_points.T, interpolation_values)
         region_vertices = np.unique(
@@ -100,10 +96,6 @@ def color_vertices(regions: list[Region]):
         )
         vertex_color = interpolator(region_vertices.T)
         fix_out_of_bounds(vertex_color, region_vertices, border_points, border_values)
-        interpolation_visualizer_2 = np.zeros([1782, 3000, 4], dtype=np.uint8)
-        interpolation_visualizer_2[*region_vertices, :3] = vertex_color[:, np.newaxis]
-        interpolation_visualizer_2[*region_vertices, 3] = 255
-        Image.fromarray(interpolation_visualizer_2).save(f"sample_interpolation\\{region.id}_v.png")
         vertex_indices = vertex_index_map[*region_vertices].toarray()
         new_colors = (vertex_color / 255.0).astype(np.float32)
         color_value_accumulator[vertex_indices] += new_colors

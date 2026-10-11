@@ -455,9 +455,6 @@ pub fn remove_intersecting_edges(polygon_coords: Vec<Vec<(usize, usize)>>) -> (V
     let mut edges_to_remap = IntSet::new(edge_list.len());
     add_remap_edges(&edge_list, &mut edges_to_remap, &polygons, &polygons_to_remove, &edges_to_remove);
     let removing_vector: Vec<usize> = polygons_to_remove.iter().copied().collect();
-    if !polygons_to_remove.is_empty() {
-        println!("Remapping {removing_vector:?}");
-    }
     let mut remapped_edges = IntSet::new(edge_list.len());
     loop {
         let mut any_polygons_remapped = false;
