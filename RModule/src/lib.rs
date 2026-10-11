@@ -44,9 +44,10 @@ use pyo3::types::PyList;
     py: Python<'py>,
     image_size: Vec<usize>,
     region_map: Bound<'py, PyArray<i64, Ix2>>,
-    point_values: Bound<'py, PyArray<i64, Ix2>>
+    point_values: Bound<'py, PyArray<i64, Ix2>>,
+    border_connection_mask: Bound<'py, PyArray<bool, Ix2>>
   ) -> PyResult<Bound<'py, PyDict>> {
-    super::border_finder::get_double_border_dict(py, image_size, region_map, point_values)
+    super::border_finder::get_double_border_dict(py, image_size, region_map, point_values, border_connection_mask)
   }
 
   #[pyfunction]

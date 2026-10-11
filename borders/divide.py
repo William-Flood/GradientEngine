@@ -68,9 +68,11 @@ def divide_borders(
         border_segment = border_points[:,
                              np.argwhere(labels == split)[:, 0]
                              ]
+        region_points_map = np.zeros(region_map.shape, dtype=np.int32)
+        region_points_map[*region_one.points] = 1
         segment_ordered = order_border_points(
             np.ascontiguousarray(border_segment).astype(np.int32),
-            np.ascontiguousarray(region_map).astype(np.int32)
+            np.ascontiguousarray(region_points_map).astype(np.int32)
         ).T
         is_pixel_filled = np.all(np.greater(segment_ordered, -1), axis=0)
         segment_ordered_filtered = segment_ordered[

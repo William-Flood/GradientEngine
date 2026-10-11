@@ -116,23 +116,26 @@ fn fill_double_point_neighbor(
     py: Python,
     original_region: i64,
     original_value: i64,
+    border_connection_mask: &Vec<bool>
 ) {
     if y < image_size[0] && x < image_size[1] {
-        let new_region_id = region_grid[y * image_size[1] + x];
-        let new_value = values_grid[y * image_size[1] + x];
+        let grid_index = y * image_size[1] + x;
+        let new_region_id = region_grid[grid_index];
+        let new_value = values_grid[grid_index];
         let is_new_past_old = new_region_id > original_region;
         let are_regions_opaque= new_value >= 0 && original_value >= 0;
         let is_only_old_alpha = new_value != -1 && original_value == -1;
         if  is_new_past_old && are_regions_opaque {
-            // if new_region_id == 1 && original_region == 1 {
-            //     println!("Screwy path 1")
-            // }
-            fill_double_point(result_dict, y, x, py, original_region, new_region_id);
+            if border_connection_mask[grid_index] {
+                println!("Making split on {y}, {x}");
+                fill_double_point(result_dict, y, x, py, original_region, -1);
+                fill_double_point(result_dict, y, x, py, new_region_id, -1);
+            }
+            else {
+                fill_double_point(result_dict, y, x, py, original_region, new_region_id);
+            }
         }
         else if is_only_old_alpha {
-            // if new_region_id == 1 && original_region == 1 {
-            //     println!("Screwy path 2")
-            // }
             fill_double_point(result_dict, y, x, py, new_region_id, original_region);
         }
     }
@@ -142,34 +145,28 @@ fn fill_double_point_neighbors(
         region_grid: &Vec<i64>, 
         values_grid: &Vec<i64>, 
         result_dict: &Bound<'_, PyDict>, 
-        y: usize, 
-        x: usize, 
+        scan_y: usize, 
+        scan_x: usize, 
         image_size: &Vec<usize>, 
-        py: Python
+        py: Python,
+        connection_mask_grid: &Vec<bool>
     ) {
-    let original_region_id = region_grid[y * image_size[1] + x];
-    let original_value = values_grid[y * image_size[1] + x];
-    fill_double_point_neighbor(
-        region_grid, values_grid, result_dict, y + 1, x, &image_size, py, original_region_id, original_value
-    );
-    fill_double_point_neighbor(
-        region_grid, values_grid, result_dict, y, x + 1, &image_size, py, original_region_id, original_value
-    );
-    if y > 0 {
-        fill_double_point_neighbor(
-            region_grid, values_grid, result_dict,
-            y - 1, x, &image_size, py, original_region_id, original_value
-        );
+    let original_region_id = region_grid[scan_y * image_size[1] + scan_x];
+    let original_value = values_grid[scan_y * image_size[1] + scan_x];
+    let fill_from_scan = |y, x| {fill_double_point_neighbor(
+        region_grid, values_grid, result_dict, y, x, &image_size, py, original_region_id, original_value, connection_mask_grid
+    )};
+    fill_from_scan(scan_y + 1, scan_x);
+    fill_from_scan(scan_y, scan_x + 1);
+    if scan_y > 0 {
+        fill_from_scan(scan_y - 1, scan_x);
     }
-    if x > 0 {
-        fill_double_point_neighbor(
-            region_grid, values_grid, result_dict,
-            y, x - 1, &image_size, py, original_region_id, original_value
-        );
+    if scan_x > 0 {
+    fill_from_scan(scan_y, scan_x - 1);
     }
-    if y == 0 || x == 0 {
+    if scan_y == 0 || scan_x == 0 {
         fill_double_point(
-            result_dict, y, x, py, original_region_id, -1
+            result_dict, scan_y, scan_x, py, original_region_id, -1
         );
     }
 }
@@ -179,11 +176,13 @@ pub fn get_double_border_dict<'py>(
     py: Python<'py>,
     image_size: Vec<usize>,
     region_map: Bound<'py, PyArray<i64, Ix2>>,
-    point_values: Bound<'py, PyArray<i64, Ix2>>
+    point_values: Bound<'py, PyArray<i64, Ix2>>,
+    border_connection_mask: Bound<'py, PyArray<bool, Ix2>>
   ) -> PyResult<Bound<'py, PyDict>> {
     let result_dict = PyDict::new(py);
     let region_grid = numpy_utils::numpy_to_vec(&region_map.readonly());
     let values_grid = numpy_utils::numpy_to_vec(&point_values.readonly());
+    let mask_grid = numpy_utils::numpy_to_vec(&border_connection_mask.readonly());
     for region_y in 0..image_size[0] {
       for region_x in 0..image_size[1] {
         fill_double_point_neighbors(
@@ -193,7 +192,8 @@ pub fn get_double_border_dict<'py>(
             region_y, 
             region_x, 
             &image_size, 
-            py
+            py,
+            &mask_grid
         );
       }
     }

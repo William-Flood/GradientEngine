@@ -16,7 +16,6 @@ from borders.connection_filter import ConnectionFilter
 from util.inspection_utils_gui import visualize_array
 from polygon.cut_concave import cut_concave_regions
 from polygon.cut_out_quads import cut_out_quads
-from gradengrs import get_double_borders_dict
 from image.draw_borders import draw_region_borders, draw_borders, draw_validation_failures
 from util.rasterize import *
 from polygon.subdivide_polygons import subdivide
@@ -26,6 +25,7 @@ from scipy.interpolate import CloughTocher2DInterpolator
 from polygon.decimate_mesh import decimate_mesh
 from polygon.remove_self_intersections import remove_self_intersections
 from polygon.validate_region_polygon import validate_region_polygons
+from borders.collect_border_points import collect_border_points
 
 
 def get_interpolations(
@@ -291,7 +291,8 @@ def make_border_loops(
         border_defuzz_threshold,
         border_traversal_failure_tolerance,
         validation_highlight_file_name,
-        validation_fix_file_name
+        validation_fix_file_name,
+        mask_file_name
     ):
     regions_array = np.full(image_shape, -1)
     values_array = np.full(image_shape, -1)
@@ -304,7 +305,7 @@ def make_border_loops(
     # regions_csv = matrix_to_csv(regions_array)
     print("Detecting border pixels")
     # regions_borders_raw = detect_drawn_border(regions_array, values_array)
-    regions_borders_raw = get_double_borders_dict(regions_array.shape, regions_array, values_array.astype(np.int64))
+    regions_borders_raw = collect_border_points(regions_array.shape, regions_array, values_array.astype(np.int64), mask_file_name)
     regions_borders: Dict[int, Dict[int, Region]] = dict()
     total_borders = []
     # connection_filter = ConnectionFilter()
@@ -386,6 +387,7 @@ def normalize_polygons(regions: list[Region], edge_subdivide_ratio, min_length):
 def subdivided_border_tangent_interpolation_fill(
     guide_image_file,
     result_image_file,
+    mask_file_name=None,
     region_defuzz_threshold=10,
     sideways_cut_penalty=100,
     border_defuzz_threshold=5,
@@ -418,7 +420,8 @@ def subdivided_border_tangent_interpolation_fill(
         border_defuzz_threshold,
         border_traversal_failure_tolerance,
         validation_highlight_file_name,
-        validation_fix_file_name
+        validation_fix_file_name,
+        mask_file_name
     )
     def inspect_polys(region, ids):
         scale = 10
